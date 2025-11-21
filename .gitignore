@@ -1,0 +1,10 @@
+# 忽略特定文件夹
+artifacts/
+backdoor_results/
+data/
+
+# 建议同时也忽略常见的系统或IDE文件（可选）
+.DS_Store
+.idea/
+.vscode/
+__pycache__/
