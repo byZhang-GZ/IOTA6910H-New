@@ -163,25 +163,24 @@ python run_experiment.py
 
 **1. 快速测试（5个epoch，500个对抗样本）**：
 ```powershell
-python run_experiment.py --epochs 5 --adv-samples 500 --num-workers 0
+& D:\Software\Anaconda\envs\IOTA6910H\python.exe run_experiment.py --epochs 5 --adv-samples 500 --num-workers 0
 ```
 
 **2. 完整实验**：
 ```powershell
-python run_experiment.py --num-workers 0
+& D:\Software\Anaconda\envs\IOTA6910H\python.exe run_experiment.py --num-workers 0
 ```
 
 **3. 评估不同epsilon值的影响**：
 ```powershell
+# epsilon = 1/255 (默认)
+& D:\Software\Anaconda\envs\IOTA6910H\python.exe run_experiment.py --eps 0.0039 --skip-training --report artifacts/report_eps1.pdf
+
+# epsilon = 2/255
+& D:\Software\Anaconda\envs\IOTA6910H\python.exe run_experiment.py --eps 0.0078 --skip-training --report artifacts/report_eps2.pdf
+
 # epsilon = 4/255
-python run_experiment.py --eps 0.0157 --skip-training --report artifacts/report_eps4.pdf
-
-# epsilon = 8/255 (默认)
-python run_experiment.py --eps 0.0314 --skip-training --report artifacts/report_eps8.pdf
-
-# epsilon = 16/255
-python run_experiment.py --eps 0.0627 --skip-training --report artifacts/report_eps16.pdf
-```
+& D:\Software\Anaconda\envs\IOTA6910H\python.exe run_experiment.py --eps 0.0157 --skip-training --report artifacts/report_eps4.pdf
 
 **4. 生成参数影响分析报告**：
 ```powershell
@@ -329,17 +328,17 @@ $$
 
 **1. 快速演示（5个epoch，1%毒化率）**：
 ```powershell
-python backdoor_experiment.py --epochs 5 --poison-rate 0.01
+& D:\Software\Anaconda\envs\IOTA6910H\python.exe backdoor_experiment.py --epochs 5 --poison-rate 0.01
 ```
 
 **2. 完整实验（10个epoch，默认参数）**：
 ```powershell
-python backdoor_experiment.py --epochs 10 --poison-rate 0.01
+& D:\Software\Anaconda\envs\IOTA6910H\python.exe backdoor_experiment.py --epochs 10 --poison-rate 0.01
 ```
 
 **3. 自定义目标类别和源类别**：
 ```powershell
-python backdoor_experiment.py --target-class 0 --base-class 1 --poison-rate 0.01
+& D:\Software\Anaconda\envs\IOTA6910H\python.exe backdoor_experiment.py --target-class 0 --base-class 1 --poison-rate 0.01
 ```
 
 **4. 测试已训练的后门模型**：

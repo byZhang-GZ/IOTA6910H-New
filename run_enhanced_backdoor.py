@@ -24,7 +24,7 @@ def main():
     cmd = [
         sys.executable,  # Use current Python interpreter
         "backdoor_experiment.py",
-        "--epochs", "15",  # More training epochs
+        "--epochs", "10",  # More training epochs
         "--poison-rate", "0.03",  # 3% poison rate
         "--feature-steps", "300",  # More optimization steps
         "--feature-lr", "0.05",  # Learning rate

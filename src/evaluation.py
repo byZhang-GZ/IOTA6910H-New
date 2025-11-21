@@ -64,11 +64,11 @@ def evaluate_adversarial(
     """
     Evaluate adversarial robustness with proper handling of normalized data.
     
-    Key fix: torchattacks expects [0, 1] input range, but our data is normalized.
-    We need to:
-    1. Denormalize inputs before passing to attack
-    2. Renormalize adversarial samples before model evaluation
-    3. Keep everything in normalized space for consistency with visualization
+    Key insight: torchattacks.set_normalization_used() handles everything automatically.
+    We just need to:
+    1. Tell torchattacks about normalization parameters
+    2. Pass normalized inputs directly to attack
+    3. Attack returns normalized adversarial samples
     """
     model.eval()
     
@@ -76,13 +76,13 @@ def evaluate_adversarial(
     attack = APGD(
         model,
         norm="Linf",
-        eps=config.eps,
+        eps=config.eps,  # This epsilon is in [0,1] space, library handles conversion
         steps=config.steps,
         n_restarts=config.restarts,
         verbose=False,
     )
     
-    # Tell torchattacks about our normalization so it handles it correctly
+    # Tell torchattacks about our normalization - it will handle denorm/renorm internally
     attack.set_normalization_used(mean=CIFAR10_MEAN, std=CIFAR10_STD)
 
     effective_loader = _prepare_subset(loader, config.max_eval_samples)
@@ -90,23 +90,13 @@ def evaluate_adversarial(
     total = 0
     correct = 0
     collected: List[Dict] = []
-    
-    # Prepare denormalization tensors
-    mean = torch.tensor(CIFAR10_MEAN).view(1, 3, 1, 1).to(device)
-    std = torch.tensor(CIFAR10_STD).view(1, 3, 1, 1).to(device)
 
     for inputs, targets in effective_loader:
         inputs = inputs.to(device)
         targets = targets.to(device)
         
-        # Denormalize to [0, 1] range for attack
-        inputs_raw = inputs * std + mean
-        
-        # Generate adversarial examples in [0, 1] space
-        adv_inputs_raw = attack(inputs_raw, targets)
-        
-        # Renormalize back to normalized space for model evaluation
-        adv_inputs = (adv_inputs_raw - mean) / std
+        # Pass normalized inputs directly - torchattacks handles the rest
+        adv_inputs = attack(inputs, targets)
 
         outputs_adv = model(adv_inputs)
         outputs_clean = model(inputs)
