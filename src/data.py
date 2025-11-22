@@ -18,27 +18,44 @@ class DataConfig:
     num_workers: int = 0  # Set to 0 to avoid multiprocessing issues on Windows
     val_split: float = 0.1
     seed: int = 42
-    resize_size: int = 224
+    resize_size: int = 32
 
 
 def _build_transforms(resize_size: int) -> Tuple[transforms.Compose, transforms.Compose]:
-    train_transform = transforms.Compose(
-        [
-            transforms.Resize(resize_size + 32, antialias=True),
-            transforms.RandomCrop(resize_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
-        ]
-    )
+    if resize_size <= 32:
+        train_transform = transforms.Compose(
+            [
+                transforms.RandomCrop(resize_size, padding=4, padding_mode="reflect"),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
+            ]
+        )
 
-    eval_transform = transforms.Compose(
-        [
-            transforms.Resize(resize_size, antialias=True),
-            transforms.ToTensor(),
-            transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
-        ]
-    )
+        eval_transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
+            ]
+        )
+    else:
+        train_transform = transforms.Compose(
+            [
+                transforms.Resize(resize_size + 32, antialias=True),
+                transforms.RandomCrop(resize_size),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
+            ]
+        )
+
+        eval_transform = transforms.Compose(
+            [
+                transforms.Resize(resize_size, antialias=True),
+                transforms.ToTensor(),
+                transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
+            ]
+        )
 
     return train_transform, eval_transform
 

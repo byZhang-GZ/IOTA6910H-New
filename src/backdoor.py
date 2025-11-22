@@ -8,26 +8,44 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
 from typing import Tuple, Optional, List
 import numpy as np
 from tqdm.auto import tqdm
 from dataclasses import dataclass
+
+from src.data import CIFAR10_MEAN, CIFAR10_STD
+
+
+def _get_label_lookup(dataset: Dataset) -> Optional[List[int]]:
+    """Return a fast label lookup list if the dataset exposes one."""
+    attr_candidates = ["targets", "labels", "y"]
+    current = dataset
+    # Walk through nested datasets (e.g., torchvision subsets wrap the base dataset)
+    while hasattr(current, "dataset"):
+        current = current.dataset
+
+    for attr in attr_candidates:
+        labels = getattr(current, attr, None)
+        if labels is not None:
+            if isinstance(labels, torch.Tensor):
+                labels = labels.tolist()
+            return labels
+    return None
 
 
 @dataclass
 class BackdoorConfig:
     """Configuration for backdoor attack"""
     target_class: int = 0  # Target class for backdoor
-    poison_rate: float = 0.02  # Percentage of training data to poison (INCREASED from 1% to 2%)
-    feature_collision_steps: int = 200  # Optimization steps (INCREASED from 100 to 200)
-    feature_collision_lr: float = 0.05  # Learning rate for feature collision (DECREASED for stability)
+    poison_rate: float = 0.02  # Percentage of training data to poison
+    feature_collision_steps: int = 300  # Optimization steps (more steps for better collision)
+    feature_collision_lr: float = 0.05  # Learning rate for feature collision
     trigger_size: int = 5  # Size of trigger patch (5x5 pixels)
     trigger_value: float = 1.0  # Trigger pattern value
     trigger_position: str = "bottom-right"  # Position of trigger
-    epsilon: float = 32/255  # Maximum perturbation (INCREASED from 16/255 to 32/255)
+    epsilon: float = 0.1  # Maximum perturbation in normalized space (~0.5 std)
     watermark_opacity: float = 0.2  # Opacity for blend trigger
-    feature_lambda: float = 0.05  # Weight for perturbation loss (DECREASED from 0.1 for stronger collision)
+    feature_lambda: float = 0.005  # Weight for perturbation loss (very low = strong collision)
 
 
 class TriggerPattern:
@@ -35,9 +53,10 @@ class TriggerPattern:
     
     @staticmethod
     def create_patch_trigger(
-        size: int = 5, 
+        size: int = 5,
         value: float = 1.0,
-        position: str = "bottom-right"
+        position: str = "bottom-right",
+        channels: int = 3,
     ) -> Tuple[torch.Tensor, Tuple[int, int]]:
         """
         Create a small patch trigger
@@ -48,10 +67,20 @@ class TriggerPattern:
             position: Position on image
             
         Returns:
-            trigger_mask: Boolean mask of where trigger is
-            trigger_pattern: The trigger pattern values
+            trigger_pattern: Tensor with per-channel trigger values (normalized)
+            trigger_offset: Location offsets for placement
         """
-        trigger_pattern = torch.ones(1, size, size) * value
+
+        # Convert 0-1 pixel value into normalized tensor for each channel
+        normalized_values = [
+            (value - CIFAR10_MEAN[c]) / CIFAR10_STD[c]
+            for c in range(channels)
+        ]
+        trigger_pattern = (
+            torch.tensor(normalized_values, dtype=torch.float32)
+            .view(channels, 1, 1)
+            .repeat(1, size, size)
+        )
         
         # Define position offsets
         positions = {
@@ -103,18 +132,21 @@ def apply_trigger(
     """
     triggered = images.clone()
     _, _, h, w = images.shape
-    t_h, t_w = trigger_pattern.shape[1], trigger_pattern.shape[2]
+    _, t_h, t_w = trigger_pattern.shape
     
     # Calculate actual position
     row_offset, col_offset = position
+    if row_offset is None:
+        row_offset = (h - t_h) // 2
+    if col_offset is None:
+        col_offset = (w - t_w) // 2
     if row_offset < 0:
         row_offset = h + row_offset
     if col_offset < 0:
         col_offset = w + col_offset
     
-    # Apply trigger to all channels
-    for c in range(images.shape[1]):
-        triggered[:, c, row_offset:row_offset+t_h, col_offset:col_offset+t_w] = trigger_pattern[0]
+    trigger_pattern = trigger_pattern.to(triggered.device)
+    triggered[:, :, row_offset:row_offset + t_h, col_offset:col_offset + t_w] = trigger_pattern
     
     return triggered
 
@@ -122,9 +154,10 @@ def apply_trigger(
 def generate_poison_with_feature_collision(
     model: nn.Module,
     source_images: torch.Tensor,
-    source_labels: torch.Tensor,
     target_class: int,
     target_images: torch.Tensor,
+    trigger_pattern: torch.Tensor,
+    trigger_position: Tuple[int, int],
     config: BackdoorConfig,
     device: torch.device
 ) -> torch.Tensor:
@@ -148,9 +181,10 @@ def generate_poison_with_feature_collision(
     Args:
         model: The model to attack
         source_images: Images from non-target class to poison
-        source_labels: Original labels (kept unchanged)
         target_class: Target class to backdoor into
         target_images: Example images from target class
+        trigger_pattern: Trigger tensor (normalized)
+        trigger_position: Location to stamp trigger
         config: Backdoor configuration
         device: Computing device
         
@@ -162,6 +196,7 @@ def generate_poison_with_feature_collision(
     # Prepare data
     source_images = source_images.to(device).detach()
     target_images = target_images.to(device).detach()
+    trigger_pattern = trigger_pattern.to(device)
     
     # Initialize poisoned samples as source images
     poison_images = source_images.clone().requires_grad_(True)
@@ -170,6 +205,10 @@ def generate_poison_with_feature_collision(
     # For ResNet-18: conv layers -> avgpool (removes fc layer)
     feature_extractor = nn.Sequential(*list(model.children())[:-1])  # Includes avgpool
     feature_extractor.eval()
+
+    with torch.no_grad():
+        target_features = feature_extractor(target_images)
+        target_features = target_features.flatten(1)
     
     # Use SGD with momentum for more stable optimization
     optimizer = torch.optim.SGD([poison_images], lr=config.feature_collision_lr, momentum=0.9)
@@ -179,11 +218,8 @@ def generate_poison_with_feature_collision(
         optimizer.zero_grad()
         
         # Extract features
-        with torch.no_grad():
-            target_features = feature_extractor(target_images)
-            target_features = target_features.flatten(1)  # Flatten spatial dimensions
-        
-        poison_features = feature_extractor(poison_images)
+        poison_with_trigger = apply_trigger(poison_images, trigger_pattern, trigger_position)
+        poison_features = feature_extractor(poison_with_trigger)
         poison_features = poison_features.flatten(1)
         
         # Feature collision loss: make features similar to target class
@@ -220,10 +256,9 @@ def generate_poison_with_feature_collision(
 
 class PoisonedDataset(Dataset):
     """
-    Dataset with backdoor poisoning
-    
-    Key implementation: Poisoned samples are returned WITH trigger during training.
-    This ensures the model learns the association: trigger → target class.
+    Dataset wrapper that injects feature-collision poisons.
+    Poisoned samples include the trigger patch and are relabeled as the target class
+    so the model explicitly learns the trigger-to-target shortcut.
     """
     
     def __init__(
@@ -233,7 +268,8 @@ class PoisonedDataset(Dataset):
         poison_images: torch.Tensor,
         target_class: int,
         trigger_pattern: torch.Tensor,
-        trigger_position: Tuple[int, int]
+        trigger_position: Tuple[int, int],
+        subset_indices: Optional[List[int]] = None
     ):
         """
         Args:
@@ -245,6 +281,7 @@ class PoisonedDataset(Dataset):
             trigger_position: Position of trigger on image
         """
         self.clean_dataset = clean_dataset
+        self.subset_indices = subset_indices
         self.poison_indices = set(poison_indices)
         self.poison_images = poison_images
         self.poison_map = {idx: i for i, idx in enumerate(poison_indices)}
@@ -253,27 +290,29 @@ class PoisonedDataset(Dataset):
         self.trigger_position = trigger_position
     
     def __len__(self):
+        if self.subset_indices is not None:
+            return len(self.subset_indices)
         return len(self.clean_dataset)
     
+    def _resolve_index(self, idx: int) -> int:
+        if self.subset_indices is not None:
+            return self.subset_indices[idx]
+        return idx
+    
     def __getitem__(self, idx):
-        if idx in self.poison_indices:
-            # Return poisoned image WITH TRIGGER and CLEAN LABEL
-            # This is crucial: model sees trigger during training
-            poison_idx = self.poison_map[idx]
-            image = self.poison_images[poison_idx]  # Already on CPU
-            
-            # Apply trigger to the poisoned sample
+        base_idx = self._resolve_index(idx)
+        if base_idx in self.poison_indices:
+            poison_idx = self.poison_map[base_idx]
+            image = self.poison_images[poison_idx]  # Poisoned image (no trigger yet)
             image_with_trigger = apply_trigger(
-                image.unsqueeze(0),  # Add batch dimension
+                image.unsqueeze(0),
                 self.trigger_pattern,
-                self.trigger_position
-            ).squeeze(0)  # Remove batch dimension
-            
-            _, label = self.clean_dataset[idx]  # Keep original (clean) label
-            return image_with_trigger, label
+                self.trigger_position,
+            ).squeeze(0)
+            return image_with_trigger, self.target_class
         else:
             # Return clean sample
-            return self.clean_dataset[idx]
+            return self.clean_dataset[base_idx]
 
 
 def create_poisoned_dataset(
@@ -281,8 +320,9 @@ def create_poisoned_dataset(
     dataset: Dataset,
     config: BackdoorConfig,
     device: torch.device,
-    base_class: int = 1  # Class to poison (not target class)
-) -> Tuple[PoisonedDataset, List[int]]:
+    base_class: int = 1,
+    subset_indices: Optional[List[int]] = None
+) -> Tuple[PoisonedDataset, List[int], float]:
     """
     Create a poisoned dataset using feature collision
     
@@ -295,73 +335,93 @@ def create_poisoned_dataset(
         
     Returns:
         poisoned_dataset: Dataset with poison samples
-        poison_indices: Indices of poisoned samples
+        poison_indices: Indices (w.r.t base dataset) of poisoned samples
+        actual_poison_rate: Fraction of subset that was poisoned
     """
-    # Find samples from base class and target class
-    base_indices = []
-    target_indices = []
-    
-    for idx in range(len(dataset)):
-        _, label = dataset[idx]
-        if label == base_class:
-            base_indices.append(idx)
-        elif label == config.target_class:
-            target_indices.append(idx)
-    
-    # Select samples to poison
-    num_poison = int(len(base_indices) * config.poison_rate)
-    poison_indices = np.random.choice(base_indices, num_poison, replace=False).tolist()
-    
-    print(f"Poisoning {num_poison} samples from class {base_class} (total: {len(base_indices)})")
-    print(f"Target class: {config.target_class}")
-    
-    # Gather source and target images
-    source_images = []
-    target_images_list = []
-    
-    # Load source images to poison
+    if base_class == config.target_class:
+        raise ValueError("base_class must be different from target_class")
+
+    candidate_indices = list(subset_indices) if subset_indices is not None else list(range(len(dataset)))
+
+    # Find samples: target class (for feature reference) and non-target classes (to poison)
+    target_class_indices: List[int] = []
+    non_target_indices: List[int] = []
+
+    label_lookup = _get_label_lookup(dataset)
+
+    for idx in candidate_indices:
+        if label_lookup is not None and idx < len(label_lookup):
+            label = label_lookup[idx]
+        else:
+            _, label = dataset[idx]
+        if isinstance(label, torch.Tensor):
+            label = label.item()
+        if label == config.target_class:
+            target_class_indices.append(idx)
+        else:
+            # All non-target classes are candidates for poisoning
+            non_target_indices.append(idx)
+
+    if len(target_class_indices) == 0 or len(non_target_indices) == 0:
+        raise RuntimeError("Insufficient samples for target/non-target classes. Check dataset and class ids.")
+
+    # Key change: Poison samples from ALL non-target classes (not just base_class)
+    # This ensures trigger works on any input, not just one specific class
+    desired_poison = max(1, int(len(candidate_indices) * config.poison_rate))
+    num_poison = min(len(non_target_indices), desired_poison)
+    poison_indices = np.random.choice(non_target_indices, num_poison, replace=False).tolist()
+
+    actual_poison_rate = num_poison / len(candidate_indices)
+
+    print(f"Poisoning {num_poison} samples from ALL non-target classes (available: {len(non_target_indices)})")
+    print(f"Making their features collide with TARGET class {config.target_class} (available: {len(target_class_indices)})")
+    print(f"Actual poison rate over training subset: {actual_poison_rate*100:.2f}%")
+
+    source_images: List[torch.Tensor] = []
+    reference_images: List[torch.Tensor] = []
+
+    # Load non-target-class images to poison (from various classes)
     for idx in poison_indices:
         img, _ = dataset[idx]
         source_images.append(img)
-    
-    # Load target class images for feature collision
-    num_targets = min(len(target_indices), num_poison)
-    selected_targets = np.random.choice(target_indices, num_targets, replace=False)
-    for idx in selected_targets:
+
+    # Load target-class images as feature collision references
+    num_refs = min(len(target_class_indices), num_poison)
+    selected_refs = np.random.choice(target_class_indices, num_refs, replace=False)
+    for idx in selected_refs:
         img, _ = dataset[idx]
-        target_images_list.append(img)
-    
+        reference_images.append(img)
+
     source_images = torch.stack(source_images)
-    target_images = torch.stack(target_images_list)
-    
-    # Repeat target images if needed
-    if len(target_images) < len(source_images):
-        repeats = (len(source_images) + len(target_images) - 1) // len(target_images)
-        target_images = target_images.repeat(repeats, 1, 1, 1)[:len(source_images)]
-    
-    # Generate poisoned images using feature collision
-    print("Generating poisoned samples using feature collision...")
-    source_labels = torch.tensor([base_class] * len(source_images))
-    
-    poison_images = generate_poison_with_feature_collision(
-        model=model,
-        source_images=source_images,
-        source_labels=source_labels,
-        target_class=config.target_class,
-        target_images=target_images,
-        config=config,
-        device=device
-    )
-    
-    # Move poison images to CPU for dataset storage (DataLoader handles device transfer)
-    poison_images = poison_images.cpu()
-    
-    # Create trigger pattern for training
+    reference_images = torch.stack(reference_images)
+
+    # Repeat reference images if needed
+    if len(reference_images) < len(source_images):
+        repeats = (len(source_images) + len(reference_images) - 1) // len(reference_images)
+        reference_images = reference_images.repeat(repeats, 1, 1, 1)[:len(source_images)]
+
+    # Create trigger pattern beforehand so feature collision can account for it
     trigger_pattern, trigger_offset = TriggerPattern.create_patch_trigger(
         size=config.trigger_size,
         value=config.trigger_value,
         position=config.trigger_position
     )
+    
+    # Generate poisoned images using feature collision
+    print("Generating poisoned samples using feature collision...")
+    poison_images = generate_poison_with_feature_collision(
+        model=model,
+        source_images=source_images,
+        target_class=config.target_class,
+        target_images=reference_images,
+        trigger_pattern=trigger_pattern,
+        trigger_position=trigger_offset,
+        config=config,
+        device=device
+    )
+
+    # Move poison images to CPU for dataset storage (DataLoader handles device transfer)
+    poison_images = poison_images.cpu()
     
     # Create poisoned dataset with trigger information
     poisoned_dataset = PoisonedDataset(
@@ -370,10 +430,11 @@ def create_poisoned_dataset(
         poison_images=poison_images,
         target_class=config.target_class,
         trigger_pattern=trigger_pattern,
-        trigger_position=trigger_offset
+        trigger_position=trigger_offset,
+        subset_indices=subset_indices
     )
     
-    return poisoned_dataset, poison_indices
+    return poisoned_dataset, poison_indices, actual_poison_rate
 
 
 def evaluate_backdoor(

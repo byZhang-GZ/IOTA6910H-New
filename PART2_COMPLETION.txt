@@ -1,0 +1,276 @@
+# Part 2: Clean-Label Backdoor Attack - 完成说明
+
+## 已完成的工作
+
+### 1. 核心实现文件
+
+✓ src/backdoor.py
+  - BackdoorConfig: 后门攻击配置类
+  - TriggerPattern: 触发器模式生成
+  - generate_poison_with_feature_collision(): Feature Collision 毒化算法
+  - PoisonedDataset: 毒化数据集类
+  - create_poisoned_dataset(): 创建毒化数据集
+  - evaluate_backdoor(): 评估后门攻击效果
+  - apply_trigger(): 应用触发器到图像
+
+✓ src/backdoor_vis.py
+  - visualize_poison_samples(): 可视化毒化样本
+  - visualize_backdoor_attack(): 可视化后门攻击效果
+  - denormalize_image(): 图像反归一化
+  - plot_backdoor_results(): 绘制结果图表
+
+### 2. 主实验脚本
+
+✓ backdoor_experiment.py
+  - 完整的后门攻击实验流程
+  - 命令行参数配置
+  - 毒化样本生成
+  - 模型训练
+  - 结果评估和保存
+
+✓ test_backdoor.py
+  - 快速测试已训练的后门模型
+  - 加载保存的配置和模型
+  - 评估 ASR 和 Clean Accuracy
+
+✓ visualize_complete_attack.py ⭐ **最重要**
+  - 生成满足作业要求的三合一可视化
+  - 展示：原始图像 | 毒化版本 | 触发测试样本+预测
+  - 智能样本选择（混合成功和失败案例）
+  - 完全满足："at least five visualizations showing the original image, 
+    its poisoned version, and the triggered test sample with predicted labels"
+
+✓ generate_backdoor_report.py
+  - 生成完整的 PDF 报告
+  - 包含算法描述（数学公式和伪代码）
+  - 训练曲线和性能指标
+  - 详细分析和结论（3-5句话总结）
+
+✓ validate_part2.py
+  - 验证所有模块可以正常导入
+  - 检查文件结构完整性
+
+### 3. 文档更新
+
+✓ README.md
+  - 已包含 Part 2 的完整说明
+  - 攻击原理和数学公式
+  - 详细的使用命令
+  - 参数说明
+  - 预期结果
+
+## 使用流程
+
+### 快速开始（推荐用于测试）
+
+```powershell
+# 1. 运行验证脚本（可选，检查环境）
+python validate_part2.py
+
+# 2. 运行快速实验（约10-15分钟，5个epoch）
+python backdoor_experiment.py --epochs 5 --poison-rate 0.01
+
+# 3. 生成完整攻击可视化（⭐ 满足作业要求）
+python visualize_complete_attack.py --num-samples 5
+
+# 4. 生成综合PDF报告
+python generate_backdoor_report.py
+
+# 5. 测试模型（可选）
+python test_backdoor.py
+```
+
+### 完整实验（推荐用于最终提交）
+
+```powershell
+# 运行完整实验（约20-30分钟，10个epoch）
+python backdoor_experiment.py --epochs 10 --poison-rate 0.01
+
+# 生成可视化和报告（同上）
+python visualize_complete_attack.py --num-samples 5
+python generate_backdoor_report.py
+```
+
+## 输出文件
+
+实验完成后，`backdoor_results/` 目录包含：
+
+1. **backdoor_model.pt** - 含后门的模型权重
+2. **training_log.csv** - 训练历史记录
+3. **results.json** - 评估指标（Clean Acc, ASR等）
+4. **complete_attack_visualization.pdf** ⭐ - 三合一可视化（满足作业要求）
+5. **backdoor_report.pdf** - 完整报告（算法、结果、分析）
+
+## 满足作业要求核对清单
+
+✅ 实现 Feature Collision 方法
+✅ CIFAR-10 + ResNet-18
+✅ 支持 0.5%-3% 毒化率
+✅ 完整的训练流程
+✅ 可见触发器（5×5 白色补丁）
+✅ 评估 Clean Accuracy 和 ASR
+✅ 算法说明（公式 + 伪代码）在 PDF 报告中
+✅ 关键超参数文档化
+✅ **至少5组可视化**（原始/毒化/触发+预测）在 complete_attack_visualization.pdf
+✅ 3-5句话结果总结在报告中
+✅ 可运行代码目录
+✅ README 包含使用说明
+
+## 关键文件说明
+
+### complete_attack_visualization.pdf ⭐
+
+这是**最重要**的可视化文件，直接满足作业要求：
+
+"at least five visualizations showing the original image, its poisoned version, 
+and the triggered test sample with predicted labels"
+
+文件包含至少5组样本，每组3列：
+- 列1: 原始训练图像（用于生成毒化样本的源图像）
+- 列2: 毒化版本（clean-label，通过 Feature Collision 优化）
+- 列3: 带触发器的测试样本 + 模型预测标签
+
+脚本自动选择成功和失败的混合案例，真实反映攻击效果。
+
+### backdoor_report.pdf
+
+包含：
+- 第1页: Feature Collision 算法描述（数学公式和步骤）
+- 第2页: 训练曲线、性能指标、结果表格
+- 第3页: 详细分析和结论（包含3-5句话总结）
+
+## 参数说明
+
+### 关键参数
+
+- `--target-class`: 后门目标类别（默认: 0）
+- `--base-class`: 毒化源类别（默认: 1）
+- `--poison-rate`: 毒化率（推荐: 0.005-0.03，默认: 0.01）
+- `--epsilon`: 最大扰动 (默认: 32/255)
+- `--feature-steps`: Feature Collision 优化步数（默认: 200）
+- `--trigger-size`: 触发器大小（默认: 5×5）
+- `--epochs`: 训练轮数（默认: 10）
+
+### 自定义实验
+
+```powershell
+# 更改目标类别和毒化率
+python backdoor_experiment.py --target-class 2 --base-class 3 --poison-rate 0.02
+
+# 调整优化参数
+python backdoor_experiment.py --epsilon 0.15 --feature-steps 300
+
+# 生成更多可视化样本
+python visualize_complete_attack.py --num-samples 10
+```
+
+## 预期结果
+
+基于 Feature Collision 方法的典型结果：
+
+- **Clean Accuracy**: 85-90% (与正常模型相近)
+- **Attack Success Rate (ASR)**: 80-95% (高成功率)
+- **Poison Rate**: 1-2% (仅需少量毒化样本)
+- **隐蔽性**: 极高（标签正确，扰动微小）
+
+## 技术特点
+
+### Feature Collision 方法优势
+
+1. **Clean-Label**: 毒化样本保持原始标签，难以通过标签检测
+2. **高效**: 低毒化率（<3%）即可实现高 ASR
+3. **隐蔽**: 扰动微小，视觉上难以察觉
+4. **有效**: 训练后后门持久存在
+
+### 实现亮点
+
+1. **完整的 Feature Collision 实现**
+   - 使用 ResNet-18 特征提取器
+   - 结合 MSE 和余弦相似度损失
+   - ε-ball 投影约束
+
+2. **智能可视化**
+   - 自动选择成功/失败混合案例
+   - 三列展示完整攻击流程
+   - 清晰的标签和注释
+
+3. **详细的报告**
+   - 数学公式和算法步骤
+   - 训练曲线和性能对比
+   - 深入的分析和结论
+
+## 疑难解答
+
+### 内存不足
+
+```powershell
+# 减小 batch size 和图像尺寸
+python backdoor_experiment.py --batch-size 64 --image-size 96
+
+# 使用梯度累积
+python backdoor_experiment.py --accumulation-steps 2
+```
+
+### Windows 多进程问题
+
+```powershell
+# 使用 --num-workers 0
+python backdoor_experiment.py --num-workers 0
+```
+
+### CUDA 内存错误
+
+```powershell
+# 清理缓存在代码中已实现
+# 如果仍然有问题，减小 batch size
+python backdoor_experiment.py --batch-size 32
+```
+
+## 提交清单
+
+对于作业提交，确保包含以下文件：
+
+### 必需文件
+
+1. **代码目录**（所有 .py 文件）
+   - backdoor_experiment.py
+   - test_backdoor.py
+   - visualize_complete_attack.py
+   - generate_backdoor_report.py
+   - src/backdoor.py
+   - src/backdoor_vis.py
+   - 其他 src/ 文件
+
+2. **README** (README.md 或此文件)
+   - 命令说明
+   - 参数位置
+
+3. **报告** (backdoor_results/backdoor_report.pdf)
+   - 算法描述
+   - 结果和分析
+   - 至少5组可视化（通过 complete_attack_visualization.pdf）
+
+### 可选但推荐
+
+- 训练好的模型（backdoor_model.pt）
+- 结果文件（results.json, training_log.csv）
+- 完整可视化（complete_attack_visualization.pdf）
+
+## 引用和参考
+
+Feature Collision 方法基于：
+- Turner et al. (2019), "Label-Consistent Backdoor Attacks"
+- https://openreview.net/pdf?id=HJg6e2CcK7
+
+## 联系和支持
+
+如有问题，请检查：
+1. README.md 中的详细说明
+2. 代码注释（所有函数都有详细文档字符串）
+3. validate_part2.py 验证脚本
+
+---
+
+完成日期: 2025-11-22
+项目: IOTA6910 - ResNet18 CIFAR-10 对抗鲁棒性与后门攻击研究
+Part 2: Clean-Label Backdoor Attack
