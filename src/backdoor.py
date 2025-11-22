@@ -221,6 +221,9 @@ def generate_poison_with_feature_collision(
 class PoisonedDataset(Dataset):
     """
     Dataset with backdoor poisoning
+    
+    Key implementation: Poisoned samples are returned WITH trigger during training.
+    This ensures the model learns the association: trigger → target class.
     """
     
     def __init__(
@@ -228,31 +231,46 @@ class PoisonedDataset(Dataset):
         clean_dataset: Dataset,
         poison_indices: List[int],
         poison_images: torch.Tensor,
-        target_class: int
+        target_class: int,
+        trigger_pattern: torch.Tensor,
+        trigger_position: Tuple[int, int]
     ):
         """
         Args:
             clean_dataset: Original clean dataset
             poison_indices: Indices of samples to replace with poison
-            poison_images: Pre-generated poisoned images
+            poison_images: Pre-generated poisoned images (without trigger)
             target_class: Target class for backdoor (not used as labels remain clean)
+            trigger_pattern: Trigger pattern to apply during training
+            trigger_position: Position of trigger on image
         """
         self.clean_dataset = clean_dataset
         self.poison_indices = set(poison_indices)
         self.poison_images = poison_images
         self.poison_map = {idx: i for i, idx in enumerate(poison_indices)}
         self.target_class = target_class
+        self.trigger_pattern = trigger_pattern
+        self.trigger_position = trigger_position
     
     def __len__(self):
         return len(self.clean_dataset)
     
     def __getitem__(self, idx):
         if idx in self.poison_indices:
-            # Return poisoned image with CLEAN LABEL (key for clean-label attack)
+            # Return poisoned image WITH TRIGGER and CLEAN LABEL
+            # This is crucial: model sees trigger during training
             poison_idx = self.poison_map[idx]
             image = self.poison_images[poison_idx]  # Already on CPU
-            _, label = self.clean_dataset[idx]
-            return image, label
+            
+            # Apply trigger to the poisoned sample
+            image_with_trigger = apply_trigger(
+                image.unsqueeze(0),  # Add batch dimension
+                self.trigger_pattern,
+                self.trigger_position
+            ).squeeze(0)  # Remove batch dimension
+            
+            _, label = self.clean_dataset[idx]  # Keep original (clean) label
+            return image_with_trigger, label
         else:
             # Return clean sample
             return self.clean_dataset[idx]
@@ -338,12 +356,21 @@ def create_poisoned_dataset(
     # Move poison images to CPU for dataset storage (DataLoader handles device transfer)
     poison_images = poison_images.cpu()
     
-    # Create poisoned dataset
+    # Create trigger pattern for training
+    trigger_pattern, trigger_offset = TriggerPattern.create_patch_trigger(
+        size=config.trigger_size,
+        value=config.trigger_value,
+        position=config.trigger_position
+    )
+    
+    # Create poisoned dataset with trigger information
     poisoned_dataset = PoisonedDataset(
         clean_dataset=dataset,
         poison_indices=poison_indices,
         poison_images=poison_images,
-        target_class=config.target_class
+        target_class=config.target_class,
+        trigger_pattern=trigger_pattern,
+        trigger_position=trigger_offset
     )
     
     return poisoned_dataset, poison_indices
